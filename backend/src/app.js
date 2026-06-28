@@ -14,6 +14,7 @@ app.use("/api/auth", require("./routes/auth.routes"));
 app.use("/api/threshold", require("./routes/threshold.routes"));
 app.use("/api/control", require("./routes/control.routes"));
 app.use("/api/notes", require("./routes/note.routes"));
+app.use("/api/schedule", require("./routes/schedule.routes"));
 
 
 

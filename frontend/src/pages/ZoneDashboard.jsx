@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate, Navigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useZoneRealtime } from "../hooks/useZoneRealtime";
 import { useZoneControl } from "../hooks/useZoneControl";
+import { useDeviceSchedule } from "../hooks/useDeviceSchedule";
 import { ref, onValue } from "firebase/database";
 import { db } from "../firebase";
 import { 
@@ -104,6 +105,164 @@ function RealtimeChart({ history = [], metric = "temperature", color = "#00f2fe"
 
 // Small helper to support TrendingUp inside page file
 const TrendingUp = ({ size, style }) => <Activity size={size} style={style} />;
+
+function DeviceScheduleList({ zoneId, device, role, isManual, addLog }) {
+  const { schedules, loading } = useDeviceSchedule(zoneId, device);
+  const [startTime, setStartTime] = useState("");
+  const [endTime, setEndTime] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleAddSchedule = async (e) => {
+    e.preventDefault();
+    if (!startTime || !endTime) {
+      alert("Vui lòng nhập đầy đủ giờ bắt đầu và giờ kết thúc!");
+      return;
+    }
+    setSubmitting(true);
+    addLog(`📅 Thêm lịch hẹn giờ [${device}]: ${startTime} - ${endTime}...`);
+    try {
+      const res = await api.post(`/api/schedule/${zoneId}/device/${device}`, {
+        startTime,
+        endTime
+      });
+      if (res.status === 201) {
+        addLog(`✅ Đã thêm lịch hẹn giờ cho ${device}.`);
+        setStartTime("");
+        setEndTime("");
+      }
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message;
+      addLog(`❌ Thêm lịch thất bại: ${msg}`);
+      alert(msg);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleToggleEnable = async (scheduleId, currentStatus) => {
+    addLog(`⚙️ Đang thay đổi trạng thái lịch ${scheduleId} -> ${!currentStatus ? "BẬT" : "TẮT"}...`);
+    try {
+      const res = await api.put(`/api/schedule/${zoneId}/device/${device}/${scheduleId}`, {
+        enabled: !currentStatus
+      });
+      if (res.status === 200) {
+        addLog(`✅ Đã cập nhật trạng thái lịch hẹn giờ.`);
+      }
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message;
+      addLog(`❌ Cập nhật thất bại: ${msg}`);
+      alert(msg);
+    }
+  };
+
+  const handleDeleteSchedule = async (scheduleId) => {
+    if (!confirm("Bạn có chắc chắn muốn xóa lịch hẹn giờ này?")) return;
+    addLog(`🗑️ Xóa lịch hẹn giờ ${scheduleId}...`);
+    try {
+      const res = await api.delete(`/api/schedule/${zoneId}/device/${device}/${scheduleId}`);
+      if (res.status === 200) {
+        addLog(`✅ Đã xóa lịch hẹn giờ.`);
+      }
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message;
+      addLog(`❌ Xóa thất bại: ${msg}`);
+      alert(msg);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 12, padding: "12px", background: "rgba(255, 255, 255, 0.02)", border: "1px solid rgba(255, 255, 255, 0.05)", borderRadius: "8px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <span style={{ fontSize: "0.8rem", fontWeight: "600", color: "var(--color-primary)", display: "flex", alignItems: "center", gap: 4 }}>
+          <Clock size={12} /> Lịch hẹn giờ (Schedule)
+        </span>
+        {isManual && (
+          <span style={{ fontSize: "0.7rem", color: "var(--color-danger)", fontWeight: "500" }}>
+            ⚠️ Bị bỏ qua
+          </span>
+        )}
+      </div>
+
+      {isManual && (
+        <div style={{ fontSize: "0.75rem", color: "var(--color-danger)", background: "rgba(244, 67, 54, 0.08)", padding: "6px 10px", borderRadius: "6px", marginBottom: 8, border: "1px solid rgba(244, 67, 54, 0.2)" }}>
+          Đang bị override thủ công, lịch hẹn giờ tạm bị bỏ qua.
+        </div>
+      )}
+
+      {loading ? (
+        <span style={{ fontSize: "0.75rem", color: "var(--color-text-muted)" }}>Đang tải lịch...</span>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: (role === "ADMIN" && schedules.length > 0) ? 10 : 0 }}>
+          {schedules.map((sch) => (
+            <div key={sch.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(0,0,0,0.1)", padding: "6px 8px", borderRadius: "6px", border: sch.enabled ? "1px solid rgba(0, 230, 118, 0.15)" : "1px solid transparent" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: "0.75rem", fontWeight: "600", color: sch.enabled ? "#00e676" : "var(--color-text-muted)" }}>
+                  {sch.startTime} - {sch.endTime}
+                </span>
+                <span style={{ fontSize: "0.65rem", padding: "2px 6px", borderRadius: "4px", background: sch.enabled ? "rgba(0, 230, 118, 0.1)" : "rgba(255, 255, 255, 0.05)", color: sch.enabled ? "#00e676" : "var(--color-text-muted)" }}>
+                  {sch.enabled ? "Bật" : "Tắt"}
+                </span>
+              </div>
+              
+              {role === "ADMIN" && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <button 
+                    onClick={() => handleToggleEnable(sch.id, sch.enabled)}
+                    className="btn-secondary"
+                    style={{ padding: "2px 6px", fontSize: "0.65rem", borderColor: sch.enabled ? "#ff9100" : "#00e676", color: sch.enabled ? "#ff9100" : "#00e676" }}
+                  >
+                    {sch.enabled ? "Tạm tắt" : "Kích hoạt"}
+                  </button>
+                  <button 
+                    onClick={() => handleDeleteSchedule(sch.id)}
+                    style={{ background: "none", border: "none", color: "var(--color-danger)", cursor: "pointer", display: "flex", alignItems: "center", padding: 2 }}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+          {schedules.length === 0 && (
+            <span style={{ fontSize: "0.75rem", color: "var(--color-text-muted)", fontStyle: "italic" }}>Chưa có lịch hẹn giờ nào.</span>
+          )}
+        </div>
+      )}
+
+      {role === "ADMIN" && (
+        <form onSubmit={handleAddSchedule} style={{ display: "flex", gap: 6, alignItems: "center", borderTop: "1px solid rgba(255,255,255,0.05)", paddingTop: 8, marginTop: 4 }}>
+          <div style={{ flex: 1, display: "flex", gap: 4, alignItems: "center" }}>
+            <input 
+              type="time" 
+              className="form-input" 
+              style={{ padding: "4px 6px", fontSize: "0.75rem", background: "rgba(0,0,0,0.2)", color: "#fff" }}
+              value={startTime}
+              onChange={e => setStartTime(e.target.value)}
+              required
+            />
+            <span style={{ fontSize: "0.7rem", color: "var(--color-text-muted)" }}>đến</span>
+            <input 
+              type="time" 
+              className="form-input" 
+              style={{ padding: "4px 6px", fontSize: "0.75rem", background: "rgba(0,0,0,0.2)", color: "#fff" }}
+              value={endTime}
+              onChange={e => setEndTime(e.target.value)}
+              required
+            />
+          </div>
+          <button 
+            type="submit" 
+            disabled={submitting}
+            className="btn-primary" 
+            style={{ width: "auto", padding: "4px 8px", fontSize: "0.75rem", display: "flex", alignItems: "center", gap: 2 }}
+          >
+            <Plus size={12} /> Thêm
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
 
 export default function ZoneDashboard() {
   const { zoneId } = useParams();
@@ -469,6 +628,14 @@ export default function ZoneDashboard() {
                         </span>
                       </div>
                     )}
+
+                    <DeviceScheduleList 
+                      zoneId={zoneId} 
+                      device={device} 
+                      role={role} 
+                      isManual={isManual} 
+                      addLog={addLog} 
+                    />
                   </div>
                 );
               })}

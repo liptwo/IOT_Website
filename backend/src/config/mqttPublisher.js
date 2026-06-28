@@ -16,4 +16,15 @@ function publishControl(zoneId, command) {
   });
 }
 
-module.exports = { publishThreshold, publishControl };
+function publishSchedule(zoneId, device, schedulesList) {
+  const topic = `${PREFIX}/${zoneId}/schedule`;
+  const payload = {
+    device,
+    schedules: schedulesList
+  };
+  mqttClient.publish(topic, JSON.stringify(payload), { qos: 1 }, (err) => {
+    if (err) console.error("Publish schedule error:", err);
+  });
+}
+
+module.exports = { publishThreshold, publishControl, publishSchedule };
