@@ -4,56 +4,106 @@ const authMiddleware = require('../middleware/auth');
 const { requireOwnZone } = require('../middleware/requireRole');
 const { db } = require('../config/firebase');
 
-// Lấy danh sách ghi chú của Zone
-// GET /api/notes/:zoneId
-router.get('/:zoneId', authMiddleware, requireOwnZone, async (req, res) => {
+// POST /api/notes/:zoneId - Tạo ghi chú mới cho tình trạng cây
+router.post('/:zoneId', authMiddleware, requireOwnZone, async (req, res) => {
   const { zoneId } = req.params;
+  const { note } = req.body;
+
+  // 1. Validate note content
+  if (!note || typeof note !== 'string' || note.trim() === '') {
+    return res.status(400).json({ error: 'Nội dung ghi chú (note) không được để trống' });
+  }
+
+  if (note.length > 500) {
+    return res.status(400).json({ error: 'Nội dung ghi chú không được vượt quá 500 ký tự' });
+  }
+
   try {
-    if (db) {
-      const snapshot = await db.ref(`zones/${zoneId}/notes`).once('value');
-      const notesVal = snapshot.val();
-      const notesList = notesVal ? Object.keys(notesVal).map(key => ({ id: key, ...notesVal[key] })) : [];
-      return res.json(notesList);
-    } else {
-      // Mock data
-      return res.json([
-        { id: '1', zoneId, content: 'Cây phát triển bình thường, lá xanh.', createdAt: new Date().toISOString(), author: 'admin' }
-      ]);
+    if (!db) {
+      return res.status(500).json({ error: 'Firebase Realtime Database chưa được khởi tạo' });
     }
+
+    const newNote = {
+      note: note.trim(),
+      createdBy: req.user.uid,
+      createdAt: Date.now()
+    };
+
+    // 2. Lưu ghi chú bằng key tự động sinh (push)
+    const newNoteRef = db.ref(`plant_notes/${zoneId}`).push();
+    await newNoteRef.set(newNote);
+
+    res.status(201).json({
+      message: 'Tạo ghi chú thành công',
+      note: { id: newNoteRef.key, ...newNote }
+    });
   } catch (error) {
-    res.status(500).json({ message: 'Lỗi khi lấy danh sách ghi chú', error: error.message });
+    console.error(`[POST /api/notes/${zoneId}] Lỗi bởi user ${req.user?.uid}:`, error.message);
+    res.status(500).json({ error: 'Lỗi hệ thống khi lưu ghi chú' });
   }
 });
 
-// Tạo ghi chú mới cho tình trạng cây
-// POST /api/notes/:zoneId
-router.post('/:zoneId', authMiddleware, requireOwnZone, async (req, res) => {
+// GET /api/notes/:zoneId - Lấy danh sách ghi chú của Zone (sắp xếp mới nhất trước)
+router.get('/:zoneId', authMiddleware, requireOwnZone, async (req, res) => {
   const { zoneId } = req.params;
-  const { content } = req.body;
+  try {
+    if (!db) {
+      return res.status(500).json({ error: 'Firebase Realtime Database chưa được khởi tạo' });
+    }
 
-  if (!content) {
-    return res.status(400).json({ message: 'Nội dung ghi chú không được để trống' });
+    const snapshot = await db.ref(`plant_notes/${zoneId}`).once('value');
+    const notesVal = snapshot.val();
+
+    let notesList = [];
+    if (notesVal) {
+      notesList = Object.keys(notesVal).map(key => ({
+        id: key,
+        ...notesVal[key]
+      }));
+      // Sắp xếp theo thời gian mới nhất trước (createdAt giảm dần)
+      notesList.sort((a, b) => b.createdAt - a.createdAt);
+    }
+
+    res.json(notesList);
+  } catch (error) {
+    console.error(`[GET /api/notes/${zoneId}] Lỗi bởi user ${req.user?.uid}:`, error.message);
+    res.status(500).json({ error: 'Lỗi hệ thống khi lấy danh sách ghi chú' });
   }
+});
+
+// DELETE /api/notes/:zoneId/:noteId - Xóa 1 ghi chú
+router.delete('/:zoneId/:noteId', authMiddleware, requireOwnZone, async (req, res) => {
+  const { zoneId, noteId } = req.params;
 
   try {
-    const newNote = {
-      content,
-      createdAt: new Date().toISOString(),
-      author: req.user.username || 'unknown'
-    };
-
-    if (db) {
-      const newNoteRef = db.ref(`zones/${zoneId}/notes`).push();
-      await newNoteRef.set(newNote);
-      return res.status(201).json({ message: 'Tạo ghi chú thành công', note: { id: newNoteRef.key, ...newNote } });
-    } else {
-      return res.status(201).json({
-        message: '[Mock] Tạo ghi chú thành công (chưa kết nối Firebase)',
-        note: { id: Date.now().toString(), ...newNote }
-      });
+    if (!db) {
+      return res.status(500).json({ error: 'Firebase Realtime Database chưa được khởi tạo' });
     }
+
+    // 1. Đọc ghi chú ra trước để kiểm tra quyền sở hữu và sự tồn tại
+    const noteRef = db.ref(`plant_notes/${zoneId}/${noteId}`);
+    const snapshot = await noteRef.once('value');
+    const note = snapshot.val();
+
+    if (!note) {
+      return res.status(404).json({ error: 'Không tìm thấy ghi chú này' });
+    }
+
+    // 2. Quyền xóa: ADMIN hoặc là tác giả của ghi chú đó
+    const isAdmin = req.user.role === 'ADMIN';
+    const isOwner = note.createdBy === req.user.uid;
+
+    if (!isAdmin && !isOwner) {
+      return res.status(403).json({ error: 'Bạn không có quyền xóa ghi chú của người khác' });
+    }
+
+    // 3. Thực hiện xóa ghi chú
+    await noteRef.remove();
+
+    res.json({ message: 'Xóa ghi chú thành công', noteId });
   } catch (error) {
-    res.status(500).json({ message: 'Lỗi khi lưu ghi chú', error: error.message });
+    console.error(`[DELETE /api/notes/${zoneId}/${noteId}] Lỗi bởi user ${req.user?.uid}:`, error.message);
+    res.status(500).json({ error: 'Lỗi hệ thống khi xóa ghi chú' });
   }
 });
 

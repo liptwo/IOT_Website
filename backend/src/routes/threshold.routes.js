@@ -4,44 +4,74 @@ const auth = require("../middleware/auth");
 const { requireRole, requireOwnZone } = require("../middleware/requireRole");
 const { publishThreshold } = require("../config/mqttPublisher");
 
-// Lấy cấu hình ngưỡng của một Zone
-// GET /api/thresholds/:zoneId
+// GET /api/threshold/:zoneId
 router.get('/:zoneId', auth, requireOwnZone, async (req, res) => {
   const { zoneId } = req.params;
   try {
-    if (db) {
-      const snapshot = await db.ref(`thresholds/${zoneId}`).once('value');
-      const thresholds = snapshot.val();
-      return res.json({ zoneId, thresholds: thresholds || {} });
-    } else {
-      // Mock data nếu không có Firebase
-      return res.json({
-        zoneId,
-        thresholds: {
-          tempMax: 35,
-          tempMin: 15,
-          moistureMin: 40,
-          moistureMax: 80
-        }
-      });
+    if (!db) {
+      return res.status(500).json({ error: "Firebase Realtime Database chưa được khởi tạo" });
     }
+
+    const snapshot = await db.ref(`thresholds/${zoneId}`).once('value');
+    const thresholds = snapshot.val();
+    
+    return res.json({ zoneId, thresholds: thresholds || {} });
   } catch (error) {
-    res.status(500).json({ message: 'Lỗi khi lấy ngưỡng cấu hình', error: error.message });
+    console.error(`[GET /api/threshold/${zoneId}] Lỗi bởi user ${req.user?.uid}:`, error.message);
+    res.status(500).json({ error: "Lỗi hệ thống khi lấy ngưỡng cấu hình" });
   }
 });
 
-// Chỉ ADMIN được sửa threshold
+// POST /api/threshold/:zoneId (Chỉ Admin được sửa)
 router.post("/:zoneId", auth, requireRole("ADMIN"), async (req, res) => {
   const { zoneId } = req.params;
-  const data = { ...req.body, updatedBy: req.user.id, updatedAt: Date.now() };
+  const { tempMax, soilMin, lightMin } = req.body;
 
-  if (db) {
-    await db.ref(`thresholds/${zoneId}`).set(data);
+  // 1. Validate values are numbers and inside realistic ranges
+  if (tempMax === undefined || soilMin === undefined || lightMin === undefined) {
+    return res.status(400).json({ error: "Vui lòng cung cấp đầy đủ tempMax, soilMin, và lightMin" });
   }
-  publishThreshold(zoneId, data); // báo ngay xuống ESP32
 
-  res.json({ success: true });
+  const tMax = Number(tempMax);
+  const sMin = Number(soilMin);
+  const lMin = Number(lightMin);
+
+  if (isNaN(tMax) || tMax < 0 || tMax > 50) {
+    return res.status(400).json({ error: "tempMax phải là số hợp lệ từ 0 đến 50" });
+  }
+
+  if (isNaN(sMin) || sMin < 0 || sMin > 100) {
+    return res.status(400).json({ error: "soilMin phải là số hợp lệ từ 0 đến 100" });
+  }
+
+  if (isNaN(lMin) || lMin < 0 || lMin > 100) {
+    return res.status(400).json({ error: "lightMin phải là số hợp lệ từ 0 đến 100" });
+  }
+
+  try {
+    if (!db) {
+      return res.status(500).json({ error: "Firebase Realtime Database chưa được khởi tạo" });
+    }
+
+    const data = {
+      tempMax: tMax,
+      soilMin: sMin,
+      lightMin: lMin,
+      updatedBy: req.user.uid,
+      updatedAt: Date.now()
+    };
+
+    // 2. Ghi vào Firebase Realtime Database
+    await db.ref(`thresholds/${zoneId}`).set(data);
+
+    // 3. Báo xuống ESP32 qua MQTT
+    publishThreshold(zoneId, { tempMax: tMax, soilMin: sMin, lightMin: lMin });
+
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error(`[POST /api/threshold/${zoneId}] Lỗi bởi admin ${req.user?.uid}:`, error.message);
+    res.status(500).json({ error: "Lỗi hệ thống khi cập nhật ngưỡng" });
+  }
 });
 
 module.exports = router;
-
